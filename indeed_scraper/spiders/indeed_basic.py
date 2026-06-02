@@ -124,69 +124,64 @@ class IndeedBasicSpider(scrapy.Spider):
         api_key = self.settings.get("CAPTCHA_API_KEY", "")
         return await perform_login_flow(page, self.mail_manager, user_data_dir, api_key)
 
-    def _resolve_results_wanted(self, total_jobs: int | None) -> int:
+    def _resolve_results_wanted(self) -> float:
         if str(self.limit).lower() == "all":
-            return total_jobs or 1000
+            return float("inf")
         try:
             return int(self.limit)
         except ValueError:
             return 30
 
-    async def _scrape_jobs(self, session_data: dict, results_wanted: int) -> AsyncGenerator:
+    async def _yield_page_items(
+        self, results: list[dict], session_data: dict
+    ) -> AsyncGenerator:
+        for res_item in results:
+            job = res_item.get("job")
+            if not job:
+                continue
+            jk = job.get("key")
+            title = job.get("title")
+            employer = job.get("employer") or {}
+            company = job.get("sourceEmployerName") or employer.get(
+                "parentEmployer", {}
+            ).get("name")
+            loc = (job.get("location") or {}).get("formatted", {}).get("long")
+            self.logger.info(f"[JOB] {jk} | {title} | {company} | {loc}")
+            details_raw = await self.graphql_client.fetch_job(jk, session_data)
+            yield _build_item(jk, title, company, loc, res_item, details_raw)
+            await asyncio.sleep(random.uniform(1.0, 2.0))  # noqa: S311
+
+    async def _scrape_jobs(self, session_data: dict) -> AsyncGenerator:
         cursor = None
         page_num = 1
         scraped_count = 0
+        results_wanted = self._resolve_results_wanted()
+        self.logger.info(f"Will scrape up to {results_wanted} jobs.")
 
         while scraped_count < results_wanted:
             self.logger.info(f"GraphQL page {page_num} (scraped: {scraped_count})")
 
             result = await self.graphql_client.search_jobs(
-                query=self.query,
-                location=self.location,
-                cursor=cursor,
-                session_data=session_data,
+                query=self.query, location=self.location,
+                cursor=cursor, session_data=session_data,
             )
-
             if not result:
                 self.logger.error("GraphQL search returned empty.")
                 break
 
-            results = result.get("data", {}).get("jobSearch", {}).get("results", [])
+            job_search = result.get("data", {}).get("jobSearch", {})
+            results = job_search.get("results", [])
             if not results:
                 self.logger.info(f"No more jobs on page {page_num}.")
                 break
 
-            for res_item in results:
-                job = res_item.get("job")
-                if not job:
-                    continue
-
-                jk = job.get("key")
-                title = job.get("title")
-                employer = job.get("employer") or {}
-                company = job.get("sourceEmployerName") or employer.get(
-                    "parentEmployer", {}
-                ).get("name")
-                loc = (job.get("location") or {}).get("formatted", {}).get("long")
-
-                self.logger.info(f"[JOB] {jk} | {title} | {company} | {loc}")
-
-                details_raw = await self.graphql_client.fetch_job(jk, session_data)
-                item = _build_item(jk, title, company, loc, res_item, details_raw)
+            async for item in self._yield_page_items(results, session_data):
                 yield item
-
                 scraped_count += 1
                 if scraped_count >= results_wanted:
-                    break
+                    return
 
-                await asyncio.sleep(random.uniform(1.0, 2.0))  # noqa: S311
-
-            cursor = (
-                result.get("data", {})
-                .get("jobSearch", {})
-                .get("pageInfo", {})
-                .get("nextCursor")
-            )
+            cursor = job_search.get("pageInfo", {}).get("nextCursor")
             if not cursor:
                 self.logger.info("No nextCursor, end of results.")
                 break
@@ -208,16 +203,5 @@ class IndeedBasicSpider(scrapy.Spider):
             self.logger.error("No indeed session available.")
             return
 
-        total_jobs = await self.graphql_client.get_total_job_count(
-            session_data, self.query, self.location
-        )
-        if total_jobs is not None:
-            self.logger.info(f"Total jobs found: {total_jobs}")
-        else:
-            self.logger.warning("Could not retrieve total job count.")
-
-        results_wanted = self._resolve_results_wanted(total_jobs)
-        self.logger.info(f"Will scrape up to {results_wanted} jobs.")
-
-        async for item in self._scrape_jobs(session_data, results_wanted):
+        async for item in self._scrape_jobs(session_data):
             yield item

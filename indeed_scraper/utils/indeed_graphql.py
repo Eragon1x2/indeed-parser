@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import re
 from pathlib import Path
 
 import requests
@@ -41,11 +40,15 @@ class IndeedGraphQLClient:
             )
             raise e
 
+    @staticmethod
+    def _escape(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
     def _build_headers(self, session_data: dict) -> dict:
         return {
             "Host": "apis.indeed.com",
             "indeed-api-key": self._api_key,
-            "indeed-ctk": session_data["ctk"],
+            "indeed-ctk": session_data.get("ctk", ""),
             "Accept": "application/json",
             "indeed-locale": self._locale,
             "indeed-client-sub-app": "rnviewjob-ios",
@@ -105,10 +108,11 @@ class IndeedGraphQLClient:
     ) -> dict | None:
         def _post() -> dict:
             query_str = self.searchjobs_query
-            query_str = query_str.replace("{what}", f'what: "{query}"' if query else "")
-
+            query_str = query_str.replace(
+                "{what}", f'what: "{self._escape(query)}"' if query else ""
+            )
             loc_str = (
-                f'location: {{where: "{location}", radius: 50, radiusUnit: MILES}}'
+                f'location: {{where: "{self._escape(location)}", radius: 50, radiusUnit: MILES}}'
                 if location
                 else ""
             )
@@ -187,41 +191,6 @@ class IndeedGraphQLClient:
             elif any(code in str(e).lower() for code in ("401", "403")):
                 self._clear_session(session_data)
             return None
-
-    async def get_total_job_count(
-        self, session_data: dict, query: str, location: str
-    ) -> int | None:
-        def _fetch() -> str | None:
-            url = "https://pl.indeed.com/jobs"
-            params = {"q": query, "l": location}
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-                "Cookie": session_data["cookie_string"],
-            }
-            try:
-                res = requests.get(url, params=params, headers=headers, timeout=15)
-                res.raise_for_status()
-                return res.text
-            except Exception as e:
-                logger.warning(f"Failed to fetch indeed search page: {e}")
-                return None
-
-        html = await asyncio.to_thread(_fetch)
-        if not html:
-            return None
-
-        match = re.search(r'"totalJobCount":\s*(\d+)', html)
-        if match:
-            return int(match.group(1))
-        match = re.search(r'"totalNumResults":\s*(\d+)', html)
-        if match:
-            return int(match.group(1))
-        return None
 
     def _clear_session(self, session_data: dict) -> None:
         email = session_data.get("email")
