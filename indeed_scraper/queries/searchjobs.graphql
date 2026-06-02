@@ -1,0 +1,43 @@
+query JobSearch {
+  jobSearch(
+    {what}
+    {location}
+    {cursor}
+    limit: 15
+    {filters}
+  ) {
+    results {
+      job {
+        key
+        title
+        datePublished
+        description { html }
+        location {
+          countryName countryCode admin1Code city postalCode streetAddress
+          formatted { short long }
+        }
+        compensation {
+          estimated { currencyCode baseSalary { unitOfWork range { ... on Range { min max } } } }
+          baseSalary { unitOfWork range { ... on Range { min max } } }
+          currencyCode
+        }
+        attributes { key label }
+        employer {
+          relativeCompanyPageUrl name
+          dossier {
+            employerDetails {
+              addresses industry employeesLocalizedLabel revenueLocalizedLabel
+              briefDescription ceoName ceoPhotoUrl
+            }
+            images { headerImageUrl squareLogoUrl }
+            links { corporateWebsite }
+          }
+        }
+        recruit { viewJobUrl detailedSalary workSchedule }
+      }
+    }
+    pageInfo {
+      nextCursor
+    }
+  }
+}

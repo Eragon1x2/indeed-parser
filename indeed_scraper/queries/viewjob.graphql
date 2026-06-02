@@ -1,0 +1,331 @@
+query Viewjob($input: ID!, $detailsInput: ViewJobDetailsInput!, $jobResultTrackingKey: String, $isLoggedIn: Boolean!, $enableEmployerInsights: Boolean!) {
+  viewjob(input: $input, jobResultTrackingKey: $jobResultTrackingKey) {
+    key
+    job {
+      key
+      sourceEmployerName
+      title
+      description {
+        text
+        __typename
+      }
+      expired
+      language
+      datePublished
+      occupations {
+        key
+        __typename
+      }
+      attributes {
+        label
+        __typename
+      }
+      location {
+        countryCode
+        formatted {
+          long
+          __typename
+        }
+        latitude
+        longitude
+        __typename
+      }
+      employer {
+        key
+        ugcStats {
+          globalReviewCount
+          ratings {
+            overallRating {
+              value
+              count
+              __typename
+            }
+            __typename
+          }
+          __typename
+        }
+        subsidiaryOptOutStatusV2
+        parentEmployer {
+          name
+          subsidiaryOptOutStatusV2
+          __typename
+        }
+        dossier {
+          images {
+            rectangularLogoUrl
+            headerImageUrls {
+              url1960x400
+              __typename
+            }
+            squareLogoUrls {
+              url256
+              __typename
+            }
+            __typename
+          }
+          headerAltText {
+            value
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      compensation {
+        formattedText
+        currencyCode
+        baseSalary {
+          unitOfWork
+          range {
+            ... on Range {
+              min
+              max
+              __typename
+            }
+            ... on Exactly {
+              value
+              __typename
+            }
+            ... on AtLeast {
+              min
+              __typename
+            }
+            ... on AtMost {
+              max
+              __typename
+            }
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      indeedApply {
+        key
+        scopes
+        __typename
+      }
+      jobseekerPreferences {
+        knownPreferenceIds {
+          id
+          suid
+          __typename
+        }
+        paySentiment
+        minimumPayPreferences {
+          payAmount
+          salaryType
+          __typename
+        }
+        __typename
+      }
+      applicants @include(if: $isLoggedIn) {
+        hasInsights
+        ...ApplicantDemographicsFields
+        __typename
+      }
+      source @include(if: $enableEmployerInsights) {
+        responsiveness {
+          averageResponseTimeDays
+          responseRate
+          isActivelyReviewed
+          lastActivityTimeInDays
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    details(input: $detailsInput) {
+      mobvjtk
+      proctorGroups
+      companySummary
+      iaApplied
+      isApplyRateLimited
+      ctaEnticer
+      disclaimerText
+      isBrandedJob
+      isCompanyTabActive
+      companyLinks {
+        companyOverviewLink
+        companyReviewLink
+        __typename
+      }
+      sanitizedJobDescription
+      reportContent {
+        contentReportData
+        apiUrl
+        __typename
+      }
+      location {
+        formattedStreetAddress
+        __typename
+      }
+      trueJobLocation
+      profile {
+        isProfileInsightsBlocked
+        __typename
+      }
+      userPreference {
+        highlightedAttributes {
+          label
+          highlightedAttributes
+          highlightedAttributesIds
+          tooltips {
+            attribute
+            tooltipText
+            isTooltipActive
+            __typename
+          }
+          __typename
+        }
+        jobDescriptionSectionedContentMap {
+          contentKey
+          contentValue
+          __typename
+        }
+        matchedShift {
+          label
+          sentiment
+          suid
+          customClassSuids
+          customClassLabels
+          __typename
+        }
+        matchedJobTypes {
+          suid
+          customClassLabels
+          customClassSuids
+          label
+          sentiment
+          __typename
+        }
+        matchedSegmentPreferences {
+          displayTitle
+          attributes {
+            suid
+            label
+            sentiment
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      applyMethod {
+        ... on ViewJobIndeedApply {
+          contentHtml
+          continueUrl
+          additionalUrlParameters
+          clientMeta
+          isApplyPlusRsvpEnabled
+          tmnUrl
+          __typename
+        }
+        ... on ViewJobThirdPartyApply {
+          applyUrl
+          content
+          appShareUrl
+          __typename
+        }
+        ... on ViewJobHiringEvent {
+          content
+          indeedApplyUrl
+          __typename
+        }
+        __typename
+      }
+      remoteWorkModel {
+        text
+        isInlineText
+        type
+        __typename
+      }
+      benefit {
+        benefits {
+          key
+          label
+          __typename
+        }
+        benefitsCollapseThreshold
+        __typename
+      }
+      isSponsored
+      mobvjtk
+      shouldDisplayCompetitorsJobs
+      interviewNowModel {
+        InterviewerCount
+        __typename
+      }
+      salaryInfo {
+        max
+        min
+        __typename
+      }
+      jobTypeAndShiftSchedule {
+        jobTypes
+        shiftAndSchedule
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  jobSeekerProfile @include(if: $isLoggedIn) {
+    ...JobSeekerProfile
+    __typename
+  }
+}
+
+fragment ApplicantDemographicsFields on Applicants {
+  count {
+    total
+    last24h
+    __typename
+  }
+  workExperience {
+    title
+    pct
+    __typename
+  }
+  education {
+    title
+    pct
+    __typename
+  }
+  skills {
+    title
+    pct
+    __typename
+  }
+  certificates {
+    title
+    pct
+    __typename
+  }
+  previewInsight {
+    title
+    pct
+    __typename
+  }
+  __typename
+}
+
+fragment JobSeekerProfile on JobSeekerProfilePayload {
+  profile {
+    accountKey
+    subscription {
+      status
+      __typename
+    }
+    jsProPremiumAccess {
+      applicantInsights {
+        access
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
