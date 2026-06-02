@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import random
 import secrets
@@ -82,9 +81,7 @@ async def _get_accepted_email(
 ) -> tuple[str, str]:
     rejected_providers: list[str] = []
     for _ in range(3):
-        email, token = await asyncio.to_thread(
-            mail_manager.create_new_email, rejected_providers
-        )
+        email, token = await mail_manager.create_new_email(rejected_providers)
         logger.info(f"Trying email: {email}")
 
         await page.locator(_EMAIL_XPATH).fill(email)
@@ -130,7 +127,7 @@ async def perform_login_flow(
 
     email, token = await _get_accepted_email(page, mail_manager, captcha_api_key)
 
-    code = await asyncio.to_thread(mail_manager.wait_for_otp_code, token)
+    code = await mail_manager.wait_for_otp_code(token)
     if not code:
         raise Exception("Failed to receive OTP from temporary email.")
 
