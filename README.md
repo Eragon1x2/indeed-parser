@@ -22,14 +22,16 @@ CAPTCHA_API_KEY=   # optional, 2captcha key for auto-solving
 
 ## Usage
 
-Edit `config.py`:
+Edit `.env`:
 
-```python
-QUERY = "python"
-LOCATION = "Warszawa"
-LIMIT = "all"        # number or "all"
-FORCE_LOGIN = False
-PROXY = None         # "http://user:pass@host:port"
+```env
+SCRAPER__QUERY=python
+SCRAPER__LOCATION=Warszawa
+SCRAPER__LIMIT=all
+SCRAPER__FORCE_LOGIN=false
+SCRAPER__PROXY=http://user:pass@host:port
+
+CAPTCHA_API_KEY=
 ```
 
 Then run:
