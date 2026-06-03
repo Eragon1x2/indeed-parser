@@ -18,7 +18,7 @@ ITEM_PIPELINES = {
 }
 
 FEEDS = {
-    "data/%(name)s_%(time)s.json": {
+    "crawler/data/%(name)s_%(time)s.json": {
         "format": "json",
         "encoding": "utf8",
         "indent": 2,

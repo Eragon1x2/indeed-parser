@@ -1,6 +1,6 @@
 import asyncio
-import random
 from collections.abc import AsyncGenerator
+import random
 from typing import TYPE_CHECKING
 
 import scrapy
@@ -38,10 +38,11 @@ def _build_item(jk, title, company, loc, search_data, details_raw):
     item["salary_min"] = salary_range.get("min")
     item["salary_max"] = salary_range.get("max")
     item["remote"] = (detail_info.get("remoteWorkModel") or {}).get("text")
-    item["job_types"] = (detail_info.get("jobTypeAndShiftSchedule") or {}).get("jobTypes") or []
+    item["job_types"] = (detail_info.get("jobTypeAndShiftSchedule") or {}).get(
+        "jobTypes"
+    ) or []
     item["benefits"] = [
-        b.get("label")
-        for b in (detail_info.get("benefit") or {}).get("benefits") or []
+        b.get("label") for b in (detail_info.get("benefit") or {}).get("benefits") or []
     ]
     item["apply_url"] = apply_method.get("applyUrl") or apply_method.get("continueUrl")
     item["address"] = (detail_info.get("location") or {}).get("formattedStreetAddress")
@@ -74,7 +75,9 @@ class IndeedBasicSpider(scrapy.Spider):
             dont_filter=True,
         )
 
-    async def perform_login_flow(self, page: "Page", user_data_dir: str | None = None) -> dict:
+    async def perform_login_flow(
+        self, page: "Page", user_data_dir: str | None = None
+    ) -> dict:
         return await perform_login_flow(
             page, self.mail_manager, user_data_dir, settings.captcha_api_key
         )
@@ -87,7 +90,9 @@ class IndeedBasicSpider(scrapy.Spider):
         except ValueError:
             return 30
 
-    async def _yield_page_items(self, results: list, session_data: dict) -> AsyncGenerator:
+    async def _yield_page_items(
+        self, results: list, session_data: dict
+    ) -> AsyncGenerator:
         for res_item in results:
             job = res_item.get("job")
             if not job:
@@ -95,7 +100,9 @@ class IndeedBasicSpider(scrapy.Spider):
             jk = job.get("key")
             title = job.get("title")
             employer = job.get("employer") or {}
-            company = job.get("sourceEmployerName") or employer.get("parentEmployer", {}).get("name")
+            company = job.get("sourceEmployerName") or employer.get(
+                "parentEmployer", {}
+            ).get("name")
             loc = (job.get("location") or {}).get("formatted", {}).get("long")
             self.logger.info(f"[JOB] {jk} | {title} | {company} | {loc}")
             details_raw = await self.graphql_client.fetch_job(jk, session_data)
@@ -111,8 +118,10 @@ class IndeedBasicSpider(scrapy.Spider):
         while scraped < limit:
             self.logger.info(f"Page {page_num} (scraped: {scraped})")
             result = await self.graphql_client.search_jobs(
-                query=self.query, location=self.location,
-                cursor=cursor, session_data=session_data,
+                query=self.query,
+                location=self.location,
+                cursor=cursor,
+                session_data=session_data,
             )
             if not result:
                 break

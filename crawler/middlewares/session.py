@@ -13,10 +13,12 @@ from scrapy.http import HtmlResponse
 
 logger = logging.getLogger(__name__)
 
+_CRAWLER_DIR = Path(__file__).parent.parent
+
 
 class IndeedSessionMiddleware:
     def __init__(self, crawler) -> None:
-        self.accounts_dir = Path("accounts")
+        self.accounts_dir = _CRAWLER_DIR / "accounts"
         self._crawler = crawler
 
     @classmethod
@@ -53,7 +55,7 @@ class IndeedSessionMiddleware:
 
         sp.logger.info("No valid session. Launching browser...")
         try:
-            user_data_dir = f"playfox_data/account_{secrets.token_hex(4)}"
+            user_data_dir = str(_CRAWLER_DIR / "playfox_data" / f"account_{secrets.token_hex(4)}")
             addon_path = get_addon_path()
 
             async with async_playwright() as p:

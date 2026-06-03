@@ -11,6 +11,6 @@ wheels/
 .env
 # Runtime data
 playfox_data/
-playfox_data_test/
-accounts/
-data/
+crawler/accounts/
+crawler/data/
+crawler/playfox_data/

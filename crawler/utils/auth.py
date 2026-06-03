@@ -4,13 +4,13 @@ import secrets
 import string
 from typing import TYPE_CHECKING
 
-from indeed_scraper.utils.captcha_solver import solve_page_captcha
-from indeed_scraper.utils.cf_solver import custom_hybrid_solve_cloudflare
+from crawler.utils.captcha_solver import solve_page_captcha
+from crawler.utils.cf_solver import custom_hybrid_solve_cloudflare
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
-    from indeed_scraper.utils.temp_mail import TempMailManager
+    from crawler.utils.temp_mail import TempMailManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,7 @@ def _generate_device_id() -> str:
 
 async def _extract_cookies(page: "Page") -> tuple[dict, str, str | None]:
     cookies = await page.context.cookies()
-    ctk_value = next(
-        (c["value"] for c in cookies if c["name"].upper() == "CTK"), None
-    )
+    ctk_value = next((c["value"] for c in cookies if c["name"].upper() == "CTK"), None)
     if not ctk_value:
         try:
             ctk_value = await page.evaluate(
@@ -48,9 +46,7 @@ async def _extract_cookies(page: "Page") -> tuple[dict, str, str | None]:
 
 async def _await_email_result(page: "Page") -> bool:
     """Wait for either OTP screen or rejection message. Returns True if accepted."""
-    rejection_js = " || ".join(
-        f'h.includes("{p}")'  for p in _REJECTION_PHRASES
-    )
+    rejection_js = " || ".join(f'h.includes("{p}")' for p in _REJECTION_PHRASES)
     try:
         await page.wait_for_function(
             f"""() => {{
@@ -96,7 +92,9 @@ async def _get_accepted_email(
         if not accepted:
             provider_name = token.split(":")[0]
             rejected_providers.append(provider_name)
-            logger.warning(f"Email {email} rejected by Indeed ({provider_name} blacklisted).")
+            logger.warning(
+                f"Email {email} rejected by Indeed ({provider_name} blacklisted)."
+            )
             await page.locator(_EMAIL_XPATH).fill("")
             continue
 
@@ -145,7 +143,9 @@ async def perform_login_flow(
         logger.warning("Turnstile not resolved. Login may fail.")
 
     logger.info("Clicking login submit button...")
-    submit_locator = page.locator('//button[@data-tn-element="otp-verify-login-submit-button"]')
+    submit_locator = page.locator(
+        '//button[@data-tn-element="otp-verify-login-submit-button"]'
+    )
     try:
         await submit_locator.wait_for(state="enabled", timeout=15000)
     except Exception as e:
@@ -155,7 +155,9 @@ async def perform_login_flow(
 
     cookies_dict, cookie_string, ctk_value = await _extract_cookies(page)
     if not ctk_value:
-        logger.warning("CTK not found in cookies or JS context; session may not work correctly.")
+        logger.warning(
+            "CTK not found in cookies or JS context; session may not work correctly."
+        )
 
     return {
         "email": email,

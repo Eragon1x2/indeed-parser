@@ -6,6 +6,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _GRAPHQL_URL = "https://apis.indeed.com/graphql"
+_CRAWLER_DIR = Path(__file__).parent.parent
 _APP_API_KEY = "161092c2017b5bbab13edb12461a62d5a833871e7cad6d9d475304573de67ac8"
 _APP_BDT = (
     "7RJszkwn9Hz32YdO2u3BUCPeHlc12bk4o6tXAD26Na+K0IBFK9p/ijT7F/ahDlUBkYNONBtY93Ep"
@@ -152,7 +153,7 @@ class IndeedGraphQLClient:
         email = session_data.get("email")
         if not email:
             return
-        path = Path("accounts") / f"{email}.json"
+        path = _CRAWLER_DIR / "accounts" / f"{email}.json"
         if path.exists():
             try:
                 path.unlink()
