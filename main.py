@@ -1,10 +1,10 @@
-import argparse
 import asyncio
 import logging
 import os
 
 from dotenv import load_dotenv
 
+import config
 from indeed_scraper.scraper import scrape
 from indeed_scraper.session import get_session
 from indeed_scraper.utils.graphql import IndeedGraphQLClient
@@ -19,30 +19,22 @@ logging.basicConfig(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Indeed job scraper")
-    parser.add_argument("--query", default="python")
-    parser.add_argument("--location", default="Warszawa")
-    parser.add_argument("--limit", default="all", help="Number of jobs or 'all'")
-    parser.add_argument("--force-login", action="store_true")
-    parser.add_argument("--proxy", default=None, help="http://user:pass@host:port")
-    args = parser.parse_args()
-
-    graphql_client = IndeedGraphQLClient(proxy=args.proxy)
+    graphql_client = IndeedGraphQLClient(proxy=config.PROXY)
     mail_manager = TempMailManager()
 
     try:
         session_data = await get_session(
             graphql_client=graphql_client,
             mail_manager=mail_manager,
-            force_login=args.force_login,
+            force_login=config.FORCE_LOGIN,
             captcha_api_key=os.environ.get("CAPTCHA_API_KEY", ""),
         )
         output = await scrape(
             session_data=session_data,
             graphql_client=graphql_client,
-            query=args.query,
-            location=args.location,
-            limit=args.limit,
+            query=config.QUERY,
+            location=config.LOCATION,
+            limit=config.LIMIT,
         )
         print(f"Done. Results: {output}")
     finally:

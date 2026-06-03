@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 .env
+# User config
+config.py
+
 # Runtime data
 playfox_data/
 playfox_data_test/

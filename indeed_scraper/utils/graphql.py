@@ -1,6 +1,4 @@
 import logging
-import os
-import re
 from pathlib import Path
 
 import httpx
@@ -8,19 +6,20 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _GRAPHQL_URL = "https://apis.indeed.com/graphql"
+_APP_API_KEY = "161092c2017b5bbab13edb12461a62d5a833871e7cad6d9d475304573de67ac8"
+_APP_BDT = (
+    "7RJszkwn9Hz32YdO2u3BUCPeHlc12bk4o6tXAD26Na+K0IBFK9p/ijT7F/ahDlUBkYNONBtY93Ep"
+    "mUWDO/QvYN92BTVH7lCWkQp2yxE6W8zE0mVI10eCEe5xV36ZAxiJ95FI2vNB6Xm2u4g="
+)
 
 
 class IndeedGraphQLClient:
     def __init__(
         self,
-        api_key: str = "",
-        bdt_token: str = "",
         locale: str = "pl-PL",
         country: str = "PL",
         proxy: str | None = None,
     ):
-        self._api_key = api_key or os.environ.get("INDEED_API_KEY", "")
-        self._bdt_token = bdt_token or os.environ.get("INDEED_BDT", "")
         self._locale = locale
         self._country = country
         self._client = httpx.AsyncClient(proxy=proxy, timeout=15)
@@ -41,7 +40,7 @@ class IndeedGraphQLClient:
     def _headers(self, session_data: dict) -> dict:
         return {
             "Host": "apis.indeed.com",
-            "indeed-api-key": self._api_key,
+            "indeed-api-key": _APP_API_KEY,
             "indeed-ctk": session_data.get("ctk", ""),
             "Accept": "application/json",
             "indeed-locale": self._locale,
@@ -51,7 +50,7 @@ class IndeedGraphQLClient:
             "Indeed-App-Info": "appv=310.0; appid=com.indeed.jobsearch; osv=26.2; os=ios; dtype=tablet",
             "indeed-co": self._country,
             "Indeed-Device-ID": session_data.get("device_id", ""),
-            "Indeed-BDT": self._bdt_token,
+            "Indeed-BDT": _APP_BDT,
             "Content-Type": "application/json",
             "Cookie": session_data.get("cookie_string", ""),
         }

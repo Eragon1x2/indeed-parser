@@ -17,28 +17,25 @@ cp .env.example .env
 
 **.env:**
 ```
-INDEED_API_KEY=161092c2017b5bbab13edb12461a62d5a833871e7cad6d9d475304573de67ac8
-INDEED_BDT=your_bdt_token
-CAPTCHA_API_KEY=                # optional, 2captcha key for auto-solving
+CAPTCHA_API_KEY=   # optional, 2captcha key for auto-solving
 ```
 
 ## Usage
 
+Edit `config.py`:
+
+```python
+QUERY = "python"
+LOCATION = "Warszawa"
+LIMIT = "all"        # number or "all"
+FORCE_LOGIN = False
+PROXY = None         # "http://user:pass@host:port"
+```
+
+Then run:
+
 ```bash
-# Basic — scrape all Python jobs in Warsaw
 uv run main.py
-
-# Custom query and location
-uv run main.py --query "java developer" --location "Kraków"
-
-# Limit results
-uv run main.py --query "python" --limit 50
-
-# With proxy (residential recommended)
-uv run main.py --proxy "http://user:pass@host:port"
-
-# Force new login (ignore cached session)
-uv run main.py --force-login
 ```
 
 Results are saved to `data/indeed_YYYY-MM-DDTHH-MM-SS.json`.
