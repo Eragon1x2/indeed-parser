@@ -1,8 +1,8 @@
 import sys
 
+import structlog
 from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-import structlog
 
 _log = structlog.get_logger()
 
@@ -26,8 +26,14 @@ class ScraperSettings(BaseModel):
             raise ValueError("limit must be 'all' or an integer")
 
 
+class RunnerSettings(BaseModel):
+    package_name: str = "crawler"
+    spider_name: str = "indeed_basic"
+
+
 class Settings(BaseSettings):
     scraper: ScraperSettings = Field(default_factory=ScraperSettings)
+    runner: RunnerSettings = Field(default_factory=RunnerSettings)
     captcha_api_key: str = ""
 
     model_config = SettingsConfigDict(
