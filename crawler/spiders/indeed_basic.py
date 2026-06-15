@@ -1,156 +1,165 @@
-import asyncio
-from collections.abc import AsyncGenerator
-import random
-from typing import TYPE_CHECKING
+import json
+from pathlib import Path
 
 import scrapy
 
 from config import settings
-from crawler.utils.auth import perform_login_flow
-from crawler.utils.graphql import IndeedGraphQLClient
-from crawler.utils.temp_mail import TempMailManager
-
-if TYPE_CHECKING:
-    from playwright.async_api import Page
-
-
-def _build_item(jk, title, company, loc, search_data, details_raw):
-    item: dict = {
-        "job_key": jk,
-        "title": title,
-        "company": company,
-        "location": loc,
-        "search_data": search_data,
-    }
-    if not details_raw:
-        return item
-
-    viewjob = (details_raw.get("data") or {}).get("viewjob") or {}
-    detail_job = viewjob.get("job") or {}
-    detail_info = viewjob.get("details") or {}
-    comp = detail_job.get("compensation") or {}
-    salary_range = (comp.get("baseSalary") or {}).get("range") or {}
-    apply_method = detail_info.get("applyMethod") or {}
-
-    item["description"] = (detail_job.get("description") or {}).get("text")
-    item["date_published"] = detail_job.get("datePublished")
-    item["salary"] = comp.get("formattedText")
-    item["salary_min"] = salary_range.get("min")
-    item["salary_max"] = salary_range.get("max")
-    item["remote"] = (detail_info.get("remoteWorkModel") or {}).get("text")
-    item["job_types"] = (detail_info.get("jobTypeAndShiftSchedule") or {}).get(
-        "jobTypes"
-    ) or []
-    item["benefits"] = [
-        b.get("label") for b in (detail_info.get("benefit") or {}).get("benefits") or []
-    ]
-    item["apply_url"] = apply_method.get("applyUrl") or apply_method.get("continueUrl")
-    item["address"] = (detail_info.get("location") or {}).get("formattedStreetAddress")
-    return item
 
 
 class IndeedBasicSpider(scrapy.Spider):
     name = "indeed_basic"
 
-    custom_settings = {
-        "LOG_LEVEL": "INFO",
-        "CONCURRENT_REQUESTS": 1,
-    }
-
-    def __init__(self, **kwargs: str) -> None:
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.query = settings.scraper.query
-        self.location = settings.scraper.location
-        self.limit = settings.scraper.limit
-        self.force_login = settings.scraper.force_login
-        proxy = str(settings.scraper.proxy) if settings.scraper.proxy else None
-        self.graphql_client = IndeedGraphQLClient(proxy=proxy)
-        self.mail_manager = TempMailManager()
+        self.query = kwargs.get("query", settings.scraper.query)
+        self.location = kwargs.get("location", settings.scraper.location)
+        self.limit = kwargs.get("limit", settings.scraper.limit)
+        self.scraped_count = 0
 
-    async def start(self) -> AsyncGenerator:
-        yield scrapy.Request(
-            url="https://pl.indeed.com/",
-            callback=self.parse,
-            meta={"requires_auth": True},
+        # Read GraphQL queries from file
+        queries_dir = Path(__file__).parent.parent / "queries"
+        with open(queries_dir / "searchjobs.graphql", encoding="utf-8") as f:
+            self.search_query_tmpl = f.read().strip()
+        with open(queries_dir / "viewjob.graphql", encoding="utf-8") as f:
+            self.view_query = f.read().strip()
+
+        # Parse limit
+        limit_val = str(self.limit).lower()
+        if limit_val == "all":
+            self.max_results = float("inf")
+        else:
+            try:
+                self.max_results = int(limit_val)
+            except ValueError:
+                self.max_results = 30
+
+    async def start(self):
+        # Support multiple comma-separated keywords
+        queries = [q.strip() for q in self.query.split(",") if q.strip()]
+        for q in queries:
+            yield self._make_search_request(query=q, cursor=None, page=1)
+
+    def _make_search_request(
+        self, query: str, cursor: str | None, page: int
+    ) -> scrapy.Request:
+        what_clause = (
+            f'what: "{query.replace("\\", "\\\\").replace('"', '\\"')}"' if query else ""
+        )
+        loc_clause = (
+            f'location: {{where: "{self.location.replace("\\", "\\\\").replace('"', '\\"')}", radius: 50, radiusUnit: MILES}}'
+            if self.location
+            else ""
+        )
+        cursor_clause = f'cursor: "{cursor}"' if cursor else ""
+
+        q_body = self.search_query_tmpl
+        q_body = q_body.replace("{what}", what_clause)
+        q_body = q_body.replace("{location}", loc_clause)
+        q_body = q_body.replace("{cursor}", cursor_clause)
+        q_body = q_body.replace("{filters}", "")
+
+        return scrapy.Request(
+            url="https://apis.indeed.com/graphql",
+            method="POST",
+            body=json.dumps({"query": q_body}),
+            callback=self.get_search,
+            meta={
+                "query": query,
+                "page": page,
+                "cursor": cursor,
+                "requires_auth": True,
+            },
             dont_filter=True,
         )
 
-    async def perform_login_flow(
-        self, page: "Page", user_data_dir: str | None = None
-    ) -> dict:
-        return await perform_login_flow(
-            page, self.mail_manager, user_data_dir, settings.captcha_api_key
-        )
-
-    def _results_wanted(self) -> float:
-        if str(self.limit).lower() == "all":
-            return float("inf")
+    def get_search(self, response):
         try:
-            return int(self.limit)
-        except ValueError:
-            return 30
-
-    async def _yield_page_items(
-        self, results: list, session_data: dict
-    ) -> AsyncGenerator:
-        for res_item in results:
-            job = res_item.get("job")
-            if not job:
-                continue
-            jk = job.get("key")
-            title = job.get("title")
-            employer = job.get("employer") or {}
-            company = job.get("sourceEmployerName") or employer.get(
-                "parentEmployer", {}
-            ).get("name")
-            loc = (job.get("location") or {}).get("formatted", {}).get("long")
-            self.logger.info(f"[JOB] {jk} | {title} | {company} | {loc}")
-            details_raw = await self.graphql_client.fetch_job(jk, session_data)
-            yield _build_item(jk, title, company, loc, res_item, details_raw)
-            await asyncio.sleep(random.uniform(1.0, 2.0))  # noqa: S311
-
-    async def _scrape_jobs(self, session_data: dict) -> AsyncGenerator:
-        cursor = None
-        page_num = 1
-        scraped = 0
-        limit = self._results_wanted()
-
-        while scraped < limit:
-            self.logger.info(f"Page {page_num} (scraped: {scraped})")
-            result = await self.graphql_client.search_jobs(
-                query=self.query,
-                location=self.location,
-                cursor=cursor,
-                session_data=session_data,
-            )
-            if not result:
-                break
-
-            job_search = result.get("data", {}).get("jobSearch", {})
-            results = job_search.get("results", [])
-            if not results:
-                break
-
-            async for item in self._yield_page_items(results, session_data):
-                yield item
-                scraped += 1
-                if scraped >= limit:
-                    return
-
-            cursor = job_search.get("pageInfo", {}).get("nextCursor")
-            if not cursor:
-                break
-
-            page_num += 1
-            await asyncio.sleep(random.uniform(2.0, 5.0))  # noqa: S311
-
-    async def parse(self, response: scrapy.http.Response) -> AsyncGenerator:
-        session_data = response.meta.get("indeed_session")
-        if not session_data:
-            self.logger.error("No session available.")
+            data = json.loads(response.text)
+        except Exception as e:
+            self.logger.error(f"Failed to parse search response JSON: {e}")
             return
 
-        async for item in self._scrape_jobs(session_data):
-            yield item
+        job_search = data.get("data", {}).get("jobSearch", {})
+        results = job_search.get("results", [])
 
-        await self.graphql_client.close()
+        if not results:
+            self.logger.warning(f"No more jobs found. Response text: {response.text}")
+            return
+
+        for res_item in results:
+            if self.scraped_count >= self.max_results:
+                return
+
+            job = res_item.get("job") or {}
+            jk = job.get("key")
+            if not jk:
+                continue
+
+            payload = {
+                "query": self.view_query,
+                "variables": {
+                    "input": jk,
+                    "enableEmployerInsights": False,
+                    "jobResultTrackingKey": None,
+                    "detailsInput": {
+                        "viewjobCookieModel": {
+                            "jobseekerCookieModel": {},
+                            "clickTrackingLog": f"jk={jk}&previousPageNumber=1,last",
+                            "previousPageNumber": "1,last",
+                        },
+                        "viewjobUrl": f"https://www.indeed.com/m/viewjob?jk={jk}",
+                        "shouldQueryApplyRateLimit": True,
+                    },
+                    "isLoggedIn": False,
+                },
+            }
+
+            self.scraped_count += 1
+            self.logger.info(
+                f"Scraping Job Key: {jk} ({self.scraped_count}/{self.max_results})"
+            )
+
+            yield scrapy.Request(
+                url="https://apis.indeed.com/graphql",
+                method="POST",
+                body=json.dumps(payload),
+                callback=self.get_job,
+                meta={
+                    "job_key": jk,
+                    "title": job.get("title"),
+                    "company": job.get("sourceEmployerName")
+                    or (job.get("employer") or {}).get("parentEmployer", {}).get("name"),
+                    "loc": (job.get("location") or {}).get("formatted", {}).get("long"),
+                    "search_data": res_item,
+                    "requires_auth": True,
+                },
+                dont_filter=True,
+            )
+
+        query = response.meta["query"]
+        page = response.meta["page"]
+        next_cursor = job_search.get("pageInfo", {}).get("nextCursor")
+        if next_cursor and self.scraped_count < self.max_results:
+            self.logger.info(f"Navigating query '{query}' to page {page + 1}...")
+            yield self._make_search_request(
+                query=query, cursor=next_cursor, page=page + 1
+            )
+
+    def get_job(self, response):
+        meta = response.meta
+        try:
+            details_raw = json.loads(response.text)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to parse job details response for {meta['job_key']}: {e}"
+            )
+            details_raw = {}
+
+        yield {
+            "job_key": meta["job_key"],
+            "title": meta["title"],
+            "company": meta["company"],
+            "location": meta["loc"],
+            "search_data": meta["search_data"],
+            "details_raw": details_raw,
+        }

@@ -10,11 +10,13 @@ RANDOMIZE_DOWNLOAD_DELAY = True
 COOKIES_ENABLED = True
 
 DOWNLOADER_MIDDLEWARES = {
+    "crawler.middlewares.proxy.IndeedProxyMiddleware": 100,
     "crawler.middlewares.session.IndeedSessionMiddleware": 543,
 }
 
 ITEM_PIPELINES = {
     "crawler.pipelines.DuplicatesPipeline": 300,
+    "crawler.pipelines.IndeedParserPipeline": 400,
 }
 
 FEEDS = {

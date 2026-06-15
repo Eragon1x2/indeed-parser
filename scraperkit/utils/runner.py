@@ -19,7 +19,15 @@ class ScrapyProcessLauncher:
         )
         process.start()
         logger.info(f"Spider process started: {spider_name} (pid={process.pid})")
-        process.join()
+        try:
+            process.join()
+        except KeyboardInterrupt:
+            logger.info("Interrupt received, waiting for spider process to exit...")
+            # Allow the child process to handle SIGINT/shutdown itself
+            try:
+                process.join(timeout=5)
+            except Exception:
+                pass
         logger.info(f"Spider process finished: {spider_name} (exitcode={process.exitcode})")
 
     @staticmethod
@@ -42,5 +50,5 @@ class Runner:
     def __init__(self, package_name: str) -> None:
         self.launcher = ScrapyProcessLauncher(package_name)
 
-    def run_once(self, spider_name: str) -> None:
-        self.launcher.start(spider_name)
+    def run_once(self, spider_name: str, spider_kwargs: dict[str, Any] | None = None) -> None:
+        self.launcher.start(spider_name, spider_kwargs)
