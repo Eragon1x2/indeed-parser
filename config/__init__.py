@@ -41,7 +41,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         nested_model_default_partial_update=True,
-        cli_parse_args=True,
     )
 
 
@@ -53,3 +52,30 @@ except ValidationError as e:
         field = "__".join(str(loc).upper() for loc in err["loc"])
         _log.error(f"  {field}: {err['msg']}")
     sys.exit(1)
+
+# Parse flat CLI overrides to keep main.py clean and allow simple flags
+if any(
+    arg in sys.argv
+    for arg in ["--query", "--location", "--limit", "--proxy", "--force-login"]
+):
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--query", type=str)
+    parser.add_argument("--location", type=str)
+    parser.add_argument("--limit", type=str)
+    parser.add_argument("--force-login", action="store_true")
+    parser.add_argument("--proxy", type=str)
+    args, _ = parser.parse_known_args()
+
+    if args.query is not None:
+        settings.scraper.query = args.query
+    if args.location is not None:
+        settings.scraper.location = args.location
+    if args.limit is not None:
+        settings.scraper.limit = args.limit
+    if args.force_login:
+        settings.scraper.force_login = args.force_login
+    if args.proxy is not None:
+        settings.scraper.proxy = HttpUrl(args.proxy)
+

@@ -1,10 +1,9 @@
-query JobSearch {
+query JobSearch($what: String, $location: JobSearchLocationInput, $cursor: String) {
   jobSearch(
-    {what}
-    {location}
-    {cursor}
+    what: $what
+    location: $location
+    cursor: $cursor
     limit: 15
-    {filters}
   ) {
     results {
       job {
