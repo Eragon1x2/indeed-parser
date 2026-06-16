@@ -3,10 +3,10 @@ import logging
 import random
 from pathlib import Path
 
-from scrapy.exceptions import IgnoreRequest
+from scrapy.exceptions import CloseSpider, IgnoreRequest
 from scrapy.downloadermiddlewares.retry import get_retry_request
 
-from crawler.utils.auth import test_session, create_new_account
+from crawler.utils.auth import create_new_account
 
 logger = logging.getLogger(__name__)
 
@@ -37,25 +37,25 @@ class IndeedSessionMiddleware:
                 with open(acc_file, encoding="utf-8") as f:
                     session_data = json.load(f)
                 email = session_data.get("email")
-                spider.logger.info(f"Checking session validity for: {email}")
-                if await test_session(session_data):
-                    spider.logger.info(f"Session for {email} is VALID.")
-                    self._accounts.append(session_data)
-                else:
-                    spider.logger.warning(
-                        f"Session for {email} is EXPIRED/INVALID. Re-authenticating..."
-                    )
-                    new_acc = await create_new_account(self.accounts_dir, spider.logger)
-                    if new_acc:
-                        self._accounts.append(new_acc)
-            except Exception as e:
-                spider.logger.error(f"Error loading account {acc_file.name}: {e}")
+                spider.logger.info(f"Loaded session for: {email}")
+                self._accounts.append(session_data)
+            except (json.JSONDecodeError, OSError):
+                spider.logger.exception(f"Error loading account {acc_file.name}")
 
-        if not self._accounts:
-            spider.logger.warning("No valid accounts in directory. Creating a new one...")
-            new_acc = await create_new_account(self.accounts_dir, spider.logger)
-            if new_acc:
-                self._accounts.append(new_acc)
+        target_count = getattr(spider, "accounts_count", None) or spider.settings.getint("ACCOUNTS_COUNT", 3)
+        current_count = len(self._accounts)
+
+        if current_count < target_count:
+            needed = target_count - current_count
+            spider.logger.info(
+                f"Loaded {current_count} accounts. Creating {needed} more to meet target count of {target_count}..."
+            )
+            for _ in range(needed):
+                new_acc = await create_new_account(self.accounts_dir, spider.logger)
+                if new_acc:
+                    self._accounts.append(new_acc)
+                else:
+                    raise CloseSpider("Failed to create required new account (login or CAPTCHA failed).")
 
     async def process_request(self, request, spider):
         if not request.meta.get("requires_auth"):
@@ -118,8 +118,8 @@ class IndeedSessionMiddleware:
                     try:
                         account_file.unlink()
                         spider.logger.info(f"Deleted invalid session file: {account_file}")
-                    except Exception as e:
-                        spider.logger.error(f"Failed to delete session file: {e}")
+                    except OSError:
+                        spider.logger.exception(f"Failed to delete session file: {account_file}")
 
             # Retry request with a different account
             retry_req = get_retry_request(

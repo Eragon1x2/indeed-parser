@@ -1,4 +1,7 @@
+import asyncio
+import json
 import logging
+import os
 import random
 import secrets
 import string
@@ -6,102 +9,192 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from crawler.utils.captcha_solver import solve_page_captcha
-from crawler.utils.cf_solver import custom_hybrid_solve_cloudflare
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
-
     from crawler.utils.temp_mail import TempMailManager
 
 logger = logging.getLogger(__name__)
 
+_AUTH_URL = "https://secure.indeed.com/auth?hl=pl"
 _EMAIL_XPATH = '//input[@name="__email"]'
-_EMAIL_SUBMIT_XPATH = (
-    '//button[@type="submit" and @data-tn-element="auth-page-email-submit-button"]'
-)
+_EMAIL_SUBMIT_XPATH = '//button[@type="submit" and @data-tn-element="auth-page-email-submit-button"]'
+_OTP_INPUT_ID = "passcode-input"
+_OTP_SUBMIT_XPATH = '//button[@data-tn-element="otp-verify-login-submit-button"]'
+
 _REJECTION_PHRASES = (
-    "Tymczasowe adresy e-mail",
-    "Temporary email addresses are not supported",
-    "temporary email",
+    # Polish
+    "tymczasow", "jednorazow", "niedozwolon", "prawidłowy adres",
+    "nie są obsługiwan", "nieprawidłow", "użyj innego",
+    # English
+    "temporary", "disposable", "not supported", "not allowed",
+    "invalid email", "use a different", "use another",
 )
+_SECURITY_PHRASES = (
+    "kontrola bezpieczeństwa", "security check", "nie została ukończona",
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _generate_device_id() -> str:
-    chars = string.digits + string.ascii_lowercase
-    return "".join(secrets.choice(chars) for _ in range(16))
+    return "".join(secrets.choice(string.digits + string.ascii_lowercase) for _ in range(16))
+
+
+async def _get_body_text(page: "Page") -> str:
+    return (await page.evaluate("document.body ? document.body.innerText : ''")).lower()
+
+
+async def _otp_is_visible(page: "Page") -> bool:
+    el = await page.query_selector(f"#{_OTP_INPUT_ID}")
+    return bool(el and await el.is_visible())
 
 
 async def _extract_cookies(page: "Page") -> tuple[dict, str, str | None]:
     cookies = await page.context.cookies()
-    ctk_value = next((c["value"] for c in cookies if c["name"].upper() == "CTK"), None)
-    if not ctk_value:
-        try:
-            ctk_value = await page.evaluate(
-                "window.oneHostContext ? window.oneHostContext.ctk : null"
-            )
-        except Exception as e:
-            logger.debug(f"CTK JS eval failed: {e}")
-    cookie_string = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-    return {c["name"]: c["value"] for c in cookies}, cookie_string, ctk_value
-
-
-async def _await_email_result(page: "Page") -> bool:
-    """Wait for either OTP screen or rejection message. Returns True if accepted."""
-    rejection_js = " || ".join(f'h.includes("{p}")' for p in _REJECTION_PHRASES)
-    try:
-        await page.wait_for_function(
-            f"""() => {{
-                const otp = document.getElementById('passcode-input');
-                if (otp && otp.offsetParent !== null) return true;
-                const h = document.body ? document.body.innerHTML : '';
-                return {rejection_js};
-            }}""",
-            timeout=20000,
+    ctk = next((c["value"] for c in cookies if c["name"].upper() == "CTK"), None)
+    if not ctk:
+        ctk = await page.evaluate(
+            "window.oneHostContext ? window.oneHostContext.ctk : null"
         )
-    except Exception:
-        logger.warning("Email submit result unknown (timeout waiting for OTP or error).")
-        return True
+    cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    return {c["name"]: c["value"] for c in cookies}, cookie_str, ctk
 
+
+# ---------------------------------------------------------------------------
+# Email acceptance flow
+# ---------------------------------------------------------------------------
+
+
+async def _wait_for_captcha_or_otp(page: "Page") -> None:
+    """Poll up to 10 seconds for captcha or OTP to appear after email submit."""
+    for _ in range(20):
+        has_captcha = await page.evaluate("""
+            () => {
+                if (document.querySelector('[data-sitekey], .g-recaptcha, .h-captcha')) return true;
+                for (const f of document.querySelectorAll('iframe')) {
+                    const s = f.src || '';
+                    if (s.includes('google.com/recaptcha') || s.includes('recaptcha.net') || s.includes('hcaptcha.com'))
+                        return true;
+                }
+                return false;
+            }
+        """)
+        if has_captcha:
+            logger.info("CAPTCHA detected.")
+            return
+        if await _otp_is_visible(page):
+            logger.info("OTP input appeared without captcha.")
+            return
+        await asyncio.sleep(0.5)
+
+
+async def _wait_for_callback_or_submit(page: "Page", submit_xpath: str) -> None:
+    """After captcha token injected: wait for callback auto-submit, else click manually."""
+    for _ in range(6):
+        if await _otp_is_visible(page):
+            logger.info("OTP visible — form submitted by CAPTCHA callback.")
+            return
+        body = await _get_body_text(page)
+        if any(p in body for p in _SECURITY_PHRASES):
+            return
+        await page.wait_for_timeout(500)
+
+    logger.info("Clicking submit after CAPTCHA solve...")
+    await page.locator(submit_xpath).evaluate("el => el.click()")
+    await page.wait_for_timeout(random.randint(2000, 4000))  # noqa: S311
+
+
+async def _email_was_accepted(page: "Page") -> bool:
+    """
+    Wait up to 35s for OTP screen or rejection message.
+    Returns True if OTP appeared, False if rejected or timed out.
+    """
+    rejection_js = " || ".join(f'h.includes("{p}")' for p in _REJECTION_PHRASES)
+    security_js  = " || ".join(f'h.includes("{p}")' for p in _SECURITY_PHRASES)
+
+    condition = f"""() => {{
+        const otp = document.getElementById('{_OTP_INPUT_ID}');
+        if (otp && otp.offsetParent !== null) return true;
+        const h = document.body ? document.body.innerText.toLowerCase() : '';
+        if ({security_js}) return true;
+        return {rejection_js};
+    }}"""
+
+    timed_out = False
     try:
-        otp = await page.query_selector("#passcode-input")
-        if otp and await otp.is_visible():
-            return True
-    except Exception as e:
-        logger.debug(f"OTP element check failed: {e}")
-    return False
+        await page.wait_for_function(condition, timeout=35000)
+    except Exception:
+        timed_out = True
+        logger.warning("Timed out waiting for OTP or rejection message.")
+
+    if timed_out:
+        return await _otp_is_visible(page)
+
+    body = await _get_body_text(page)
+    if any(p in body for p in _SECURITY_PHRASES):
+        logger.warning("Indeed security check triggered.")
+        return False
+
+    return await _otp_is_visible(page)
 
 
 async def _get_accepted_email(
     page: "Page",
     mail_manager: "TempMailManager",
     captcha_api_key: str,
+    max_attempts: int = 10,
 ) -> tuple[str, str]:
-    rejected_providers: list[str] = []
-    for _ in range(3):
-        email, token = await mail_manager.create_new_email(rejected_providers)
-        logger.info(f"Trying email: {email}")
+    spent: list[str] = []
+
+    for attempt in range(max_attempts):
+        # Reload page on retry
+        if attempt > 0:
+            logger.info("Reloading auth page before retry...")
+            await page.goto(_AUTH_URL)
+            await page.wait_for_selector(_EMAIL_XPATH, timeout=30000)
+
+        # Pick next provider
+        try:
+            email, token = await mail_manager.create_new_email(spent)
+        except Exception:
+            logger.error("All email providers exhausted.")
+            break
+
+        provider = token.split(":")[0]
+        logger.info(f"Trying email: {email}  [{provider}]")
 
         await page.locator(_EMAIL_XPATH).fill(email)
-        await page.locator(_EMAIL_SUBMIT_XPATH).click()
+        await page.locator(_EMAIL_SUBMIT_XPATH).evaluate("el => el.click()")
 
-        if not await solve_page_captcha(page, captcha_api_key):
-            logger.error("Image CAPTCHA detected but could not be solved.")
-        elif captcha_api_key:
-            await page.wait_for_timeout(random.randint(2000, 4000))  # noqa: S311
+        await _wait_for_captcha_or_otp(page)
 
-        accepted = await _await_email_result(page)
-        if not accepted:
-            provider_name = token.split(":")[0]
-            rejected_providers.append(provider_name)
-            logger.warning(
-                f"Email {email} rejected by Indeed ({provider_name} blacklisted)."
-            )
+        captcha_solved = await solve_page_captcha(page, captcha_api_key)
+        if not captcha_solved:
+            logger.error(f"CAPTCHA unsolvable for [{provider}] — skipping.")
+            spent.append(provider)
+            continue
+
+        if captcha_api_key:
+            await _wait_for_callback_or_submit(page, _EMAIL_SUBMIT_XPATH)
+
+        if not await _email_was_accepted(page):
+            logger.warning(f"Email {email} rejected by Indeed — [{provider}] blacklisted.")
+            spent.append(provider)
             await page.locator(_EMAIL_XPATH).fill("")
             continue
 
         return email, token
 
-    raise Exception("All email providers rejected by Indeed.")
+    raise RuntimeError("All email providers rejected by Indeed.")
+
+
+# ---------------------------------------------------------------------------
+# Login flow
+# ---------------------------------------------------------------------------
 
 
 async def perform_login_flow(
@@ -110,17 +203,14 @@ async def perform_login_flow(
     user_data_dir: str | None = None,
     captcha_api_key: str = "",
 ) -> dict:
-    page_title = await page.title()
-    if "Security Check" in page_title:
-        is_solved = await custom_hybrid_solve_cloudflare(
-            page=page,
-            challenge_type="interstitial",
-            expected_content_selector='input[name="__email"]',
-        )
-        if not is_solved:
-            logger.error("Failed to bypass Cloudflare interstitial.")
-
     await page.wait_for_selector(_EMAIL_XPATH, timeout=60000)
+
+    # Dismiss cookie banner
+    cookie_btn = page.locator("#onetrust-accept-btn-handler")
+    if await cookie_btn.is_visible():
+        await cookie_btn.click(timeout=5000)
+        logger.info("Cookie banner dismissed.")
+
     await page.locator(_EMAIL_XPATH).click()
     await page.wait_for_timeout(random.randint(5000, 10000))  # noqa: S311
 
@@ -128,118 +218,58 @@ async def perform_login_flow(
 
     code = await mail_manager.wait_for_otp_code(token)
     if not code:
-        raise Exception("Failed to receive OTP from temporary email.")
+        raise RuntimeError("Failed to receive OTP from email provider.")
 
-    logger.info("Filling OTP passcode...")
-    passcode_xpath = '//input[@id="passcode-input"]'
-    await page.wait_for_selector(passcode_xpath, timeout=60000)
-    await page.locator(passcode_xpath).click()
-    await page.locator(passcode_xpath).fill(code)
+    logger.info("Entering OTP code...")
+    await page.wait_for_selector(f"#{_OTP_INPUT_ID}", timeout=60000)
+    await page.locator(f"#{_OTP_INPUT_ID}").fill(code)
     await page.wait_for_timeout(random.randint(2000, 5000))  # noqa: S311
 
-    turnstile_solved = await custom_hybrid_solve_cloudflare(
-        page=page, challenge_type="turnstile", solve_attempts=3
-    )
-    if not turnstile_solved:
-        logger.warning("Turnstile not resolved. Login may fail.")
-
-    logger.info("Clicking login submit button...")
-    submit_locator = page.locator(
-        '//button[@data-tn-element="otp-verify-login-submit-button"]'
-    )
-    try:
-        await submit_locator.wait_for(state="enabled", timeout=15000)
-    except Exception as e:
-        logger.debug(f"Submit button not enabled within timeout: {e}")
-    await submit_locator.click()
+    logger.info("Submitting OTP...")
+    submit = page.locator(_OTP_SUBMIT_XPATH)
+    await submit.wait_for(state="visible", timeout=15000)
+    await submit.evaluate("el => el.click()")
     await page.wait_for_timeout(10000)
 
-    cookies_dict, cookie_string, ctk_value = await _extract_cookies(page)
-    if not ctk_value:
-        logger.warning(
-            "CTK not found in cookies or JS context; session may not work correctly."
-        )
+    cookies_dict, cookie_string, ctk = await _extract_cookies(page)
+    if not ctk:
+        logger.warning("CTK cookie not found — session may not work correctly.")
 
     return {
         "email": email,
         "cookies": cookies_dict,
         "cookie_string": cookie_string,
-        "ctk": ctk_value or "",
+        "ctk": ctk or "",
         "device_id": _generate_device_id(),
         "user_data_dir": user_data_dir or f"playfox_data/account_{email.split('@')[0]}",
     }
 
 
-async def test_session(session_data: dict) -> bool:
-    import httpx
-    from config import settings
-
-    query = """
-    query JobSearch {
-      jobSearch(what: "test", limit: 1) {
-        results { job { key } }
-      }
-    }
-    """
-    headers = {
-        "Host": "apis.indeed.com",
-        "indeed-api-key": "161092c2017b5bbab13edb12461a62d5a833871e7cad6d9d475304573de67ac8",
-        "indeed-ctk": session_data.get("ctk", ""),
-        "Accept": "application/json",
-        "indeed-locale": "pl-PL",
-        "indeed-client-sub-app": "rnviewjob-ios",
-        "Accept-Language": "pl",
-        "User-Agent": "Indeed Jobs/41274 CFNetwork/3860.300.31 Darwin/25.2.0",
-        "Indeed-App-Info": "appv=310.0; appid=com.indeed.jobsearch; osv=26.2; os=ios; dtype=tablet",
-        "indeed-co": "PL",
-        "Indeed-Device-ID": session_data.get("device_id", ""),
-        "Indeed-BDT": "7RJszkwn9Hz32YdO2u3BUCPeHlc12bk4o6tXAD26Na+K0IBFK9p/ijT7F/ahDlUBkYNONBtY93EpmUWDO/QvYN92BTVH7lCWkQp2yxE6W8zE0mVI10eCEe5xV36ZAxiJ95FI2vNB6Xm2u4g=",
-        "Content-Type": "application/json",
-        "Cookie": session_data.get("cookie_string", ""),
-    }
-    proxy = str(settings.scraper.proxy) if settings.scraper.proxy else None
-    try:
-        async with httpx.AsyncClient(proxy=proxy, timeout=15) as client:
-            res = await client.post(
-                "https://apis.indeed.com/graphql",
-                json={"query": query.strip()},
-                headers=headers,
-            )
-            res.raise_for_status()
-            data = res.json()
-            for err in data.get("errors") or []:
-                if any(
-                    kw in err.get("message", "").lower()
-                    for kw in ["auth", "permission", "unauthorized", "expired", "invalid"]
-                ):
-                    return False
-            return True
-    except Exception as e:
-        logger.warning(f"Session test failed: {e}")
-        return False
+# ---------------------------------------------------------------------------
+# Account creation entry point
+# ---------------------------------------------------------------------------
 
 
 async def create_new_account(accounts_dir: Path, spider_logger: logging.Logger) -> dict | None:
-    import json
-    import os
     from browserforge.fingerprints import Screen
     from camoufox.async_api import AsyncNewBrowser
     from playwright.async_api import async_playwright
     from playwright_captcha.utils.camoufox_add_init_script.add_init_script import get_addon_path
     from config import settings
-    from crawler.utils.temp_mail import TempMailManager
+    from crawler.utils.temp_mail import (
+        TempMailManager,
+        MailTmProvider,
+        MailGwProvider,
+        GuerrillaMailProvider,
+        MailnesiaProvider,
+    )
 
     spider_logger.info("Initializing new account login flow via Playwright...")
     try:
         _CRAWLER_DIR = Path(__file__).parent.parent
-        user_data_dir = str(
-            _CRAWLER_DIR / "playfox_data" / f"account_{secrets.token_hex(4)}"
-        )
+        user_data_dir = str(_CRAWLER_DIR / "playfox_data" / f"account_{secrets.token_hex(4)}")
         addon_path = get_addon_path()
-
-        proxy_args = {}
-        if settings.scraper.proxy:
-            proxy_args["proxy"] = {"server": str(settings.scraper.proxy)}
+        proxy_args = {"proxy": {"server": str(settings.scraper.proxy)}} if settings.scraper.proxy else {}
 
         async with async_playwright() as p:
             context = await AsyncNewBrowser(
@@ -260,25 +290,26 @@ async def create_new_account(accounts_dir: Path, spider_logger: logging.Logger) 
 
             page = context.pages[0] if context.pages else await context.new_page()
             spider_logger.info("Navigating to Indeed auth page...")
-            await page.goto("https://secure.indeed.com/auth?hl=pl")
+            await page.goto(_AUTH_URL)
 
-            mail_manager = TempMailManager()
-            session_data = await perform_login_flow(
-                page, mail_manager, user_data_dir, settings.captcha_api_key
-            )
+            mail_manager = TempMailManager([
+                MailTmProvider(),
+                MailGwProvider(),
+                GuerrillaMailProvider(),
+                GuerrillaMailProvider(),  # second instance picks a different random domain
+                MailnesiaProvider(),
+            ])
 
-            email = session_data.get("email")
-            if not email:
-                raise Exception("No email in session data.")
+            session_data = await perform_login_flow(page, mail_manager, user_data_dir, settings.captcha_api_key)
 
+            email = session_data["email"]
             account_file = accounts_dir / f"{email}.json"
-            with open(account_file, "w", encoding="utf-8") as f:
-                json.dump(session_data, f, ensure_ascii=False, indent=2)
+            account_file.write_text(json.dumps(session_data, ensure_ascii=False, indent=2), encoding="utf-8")
             spider_logger.info(f"Saved session to {account_file}")
 
             await context.close()
             return session_data
-    except Exception as e:
-        spider_logger.error(f"Failed to create new account: {e}")
-        return None
 
+    except Exception:
+        spider_logger.exception("Failed to create new account")
+        return None

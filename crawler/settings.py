@@ -8,6 +8,7 @@ CONCURRENT_REQUESTS_PER_DOMAIN = 1
 DOWNLOAD_DELAY = 5
 RANDOMIZE_DOWNLOAD_DELAY = True
 COOKIES_ENABLED = True
+ACCOUNTS_COUNT = 3
 
 DOWNLOADER_MIDDLEWARES = {
     "crawler.middlewares.proxy.IndeedProxyMiddleware": 100,
@@ -16,7 +17,6 @@ DOWNLOADER_MIDDLEWARES = {
 
 ITEM_PIPELINES = {
     "crawler.pipelines.DuplicatesPipeline": 300,
-    "crawler.pipelines.IndeedParserPipeline": 400,
 }
 
 FEEDS = {

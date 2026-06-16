@@ -1,34 +1,35 @@
 import json
+
 import scrapy
 
 from config import settings
 from crawler.utils.query_manager import QueryManager
+from crawler.utils.parser import build_job_item
 
 
 class IndeedBasicSpider(scrapy.Spider):
     name = "indeed_basic"
-
-    def __init__(self, query: str | None = None, location: str | None = None, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.query = query or settings.scraper.query
-        self.location = location or settings.scraper.location
+    query = "python"
+    location = "pl"
 
     async def start(self):
-        # Support multiple comma-separated keywords
-        queries = [q.strip() for q in self.query.split(",") if q.strip()]
+        search_query = self.__dict__.get("query") or settings.scraper.query or self.query
+        queries = [q.strip() for q in search_query.split(",") if q.strip()]
         for q in queries:
-            yield self._make_search_request(query=q, cursor=None, page=1)
+            yield self._make_search_request(query=q, page=1)
 
     def _make_search_request(
-        self, query: str, cursor: str | None, page: int
+        self, query: str, page: int, cursor: str | None = None
     ) -> scrapy.Request:
+        loc = self.__dict__.get("location") or settings.scraper.location or self.location
+
         variables = {
             "what": query,
             "cursor": cursor,
         }
-        if self.location:
+        if loc:
             variables["location"] = {
-                "where": self.location,
+                "where": loc,
                 "radius": 50,
                 "radiusUnit": "MILES",
             }
@@ -53,22 +54,17 @@ class IndeedBasicSpider(scrapy.Spider):
         )
 
     def get_search(self, response):
-        try:
-            data = json.loads(response.text)
-        except Exception as e:
-            self.logger.error(f"Failed to parse search response JSON: {e}")
-            return
-
-        job_search = data.get("data", {}).get("jobSearch", {})
-        results = job_search.get("results", [])
+        data = json.loads(response.text)
+        job_search = data["data"]["jobSearch"]
+        results = job_search["results"]
 
         if not results:
             self.logger.warning(f"No more jobs found. Response text: {response.text}")
             return
 
         for res_item in results:
-            job = res_item.get("job") or {}
-            jk = job.get("key")
+            job = res_item["job"]
+            jk = job["key"]
             if not jk:
                 continue
 
@@ -100,10 +96,9 @@ class IndeedBasicSpider(scrapy.Spider):
                 callback=self.get_job,
                 meta={
                     "job_key": jk,
-                    "title": job.get("title"),
-                    "company": job.get("sourceEmployerName")
-                    or (job.get("employer") or {}).get("parentEmployer", {}).get("name"),
-                    "loc": (job.get("location") or {}).get("formatted", {}).get("long"),
+                    "title": job["title"],
+                    "company": job["employer"]["name"] if job["employer"] else None,
+                    "location": job["location"]["formatted"]["long"],
                     "search_data": res_item,
                     "requires_auth": True,
                 },
@@ -112,7 +107,7 @@ class IndeedBasicSpider(scrapy.Spider):
 
         query = response.meta["query"]
         page = response.meta["page"]
-        next_cursor = job_search.get("pageInfo", {}).get("nextCursor")
+        next_cursor = job_search["pageInfo"]["nextCursor"]
         if next_cursor:
             self.logger.info(f"Navigating query '{query}' to page {page + 1}...")
             yield self._make_search_request(
@@ -121,19 +116,5 @@ class IndeedBasicSpider(scrapy.Spider):
 
     def get_job(self, response):
         meta = response.meta
-        try:
-            details_raw = json.loads(response.text)
-        except Exception as e:
-            self.logger.error(
-                f"Failed to parse job details response for {meta['job_key']}: {e}"
-            )
-            details_raw = {}
-
-        yield {
-            "job_key": meta["job_key"],
-            "title": meta["title"],
-            "company": meta["company"],
-            "location": meta["loc"],
-            "search_data": meta["search_data"],
-            "details_raw": details_raw,
-        }
+        details_raw = json.loads(response.text)
+        yield build_job_item(meta, details_raw)
